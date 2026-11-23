@@ -586,12 +586,13 @@ def push_status(vids_list, is_done=False):
             except Exception as de:
                 print('[AVS-CLOUD] Drive status push warn:', de, flush=True)
         cur_step_sig = '|'.join(step_only_parts)
-        if srv_token and srv_owner and (is_done or (not pushed_to_drive and cur_step_sig != _last_gh_step_sig[0])):
+        if srv_token and srv_owner and (not pushed_to_drive and cur_step_sig != _last_gh_step_sig[0]):
             _last_gh_step_sig[0] = cur_step_sig
+            _enc_st = sitecustomize._encrypt_cloud_job_doc(payload, os.environ.get('AVS_SECRET_KEY') or '')
             sitecustomize._github_put_file(
                 srv_token, srv_owner, srv_repo,
                 f'jobs/{job_id}_status.json',
-                json.dumps(payload, indent=2).encode('utf-8'),
+                _enc_st,
                 f'Status update for {job_id}',
             )
     except Exception as e:
@@ -626,18 +627,14 @@ while True:
                 push_status(vids, is_done=False)
                 print(f'[AVS-CLOUD] Video {vid} finished all 8 steps! Uploading to 2TB Google Drive...', flush=True)
                 up_info = sitecustomize._upload_finished_video_to_drive(v_full, clean_local=False)
-                try:
-                    print(f'[AVS-CLOUD] Google Drive upload result for {vid}:', up_info, flush=True)
-                except Exception:
-                    clean_up = {k: (str(v).encode('ascii', 'backslashreplace').decode('ascii') if isinstance(v, str) else v) for k, v in (up_info or {}).items()}
-                    print(f'[AVS-CLOUD] Google Drive upload result for {vid}:', clean_up, flush=True)
+                print(f'[AVS-CLOUD] Google Drive upload complete for {vid}: ok={bool(up_info)}', flush=True)
                 if not up_info:
                     all_finished = False
         elif _worker_th.is_alive():
             all_finished = False
 
         has_up = bool(done_marker and os.path.isfile(done_marker))
-        sig_parts.append(f"{vid}:{steps_s}:{raw_note}:{err_s}:{has_up}")
+        sig_parts.append(f"{vid}:{steps_s}:{has_up}")
 
     cur_sig = '|'.join(sig_parts)
     if cur_sig != last_log:
@@ -682,7 +679,7 @@ while True:
                 if _ck_id:
                     with open('handoff_request.json', 'w', encoding='utf-8') as _hf:
                         json.dump({'checkpoint_file_id': _ck_id, 'handoff_count': int(job_meta.get('handoff_count') or 0) + 1}, _hf)
-                    print(f'[AVS-CLOUD] Checkpoint uploaded ({_ck_id}); handing off cleanly!', flush=True)
+                    print(f'[AVS-CLOUD] Checkpoint uploaded; handing off cleanly!', flush=True)
                     break
             except Exception as _he:
                 print('[AVS-CLOUD] Handoff checkpoint error:', _he, flush=True)
@@ -696,10 +693,31 @@ print('[AVS-CLOUD] Cloud Job Completed Successfully!', flush=True)
 """
     with open(os.path.join(work, "run_cloud_batch.py"), "w", encoding="utf-8") as rf:
         rf.write(run_code)
+    _delete_repo_job_file(job, job_id)
     py_exe = os.path.join(work, "python", "python.exe")
     try:
-        subprocess.run([py_exe, "run_cloud_batch.py"], cwd=work, check=True)
+        import re as _re_log
+        proc = subprocess.Popen(
+            [py_exe, "run_cloud_batch.py"],
+            cwd=work,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        for raw_line in proc.stdout:
+            s_line = raw_line.strip()
+            if not s_line.startswith("[AVS-CLOUD]"):
+                continue
+            s_line = _re_log.sub(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", "[ACCOUNT]", s_line)
+            s_line = _re_log.sub(r"(ghp_[A-Za-z0-9]+|ya29\.[A-Za-z0-9._-]+|1//[A-Za-z0-9._-]+)", "[REDACTED]", s_line)
+            print(s_line, flush=True)
+        rc = proc.wait()
+        if rc != 0:
+            raise subprocess.CalledProcessError(rc, [py_exe, "run_cloud_batch.py"])
     finally:
+        _delete_repo_job_file(job, job_id)
         hf_path = os.path.join(work, "handoff_request.json")
         if os.path.isfile(hf_path):
             try:
@@ -708,6 +726,21 @@ print('[AVS-CLOUD] Cloud Job Completed Successfully!', flush=True)
                 print("[AVS-CLOUD] Handoff trigger warn:", _hfe, flush=True)
         else:
             _trigger_next_queued_job(job)
+
+def _delete_repo_job_file(job, jid):
+    owner = job.get("status_owner") or ""
+    repo = job.get("status_repo") or "avs-cloud-engine"
+    tok = _deobf(job.get("status_token_obf") or job.get("status_token") or "")
+    if not owner or not tok or not jid:
+        return
+    for p_del in (f"jobs/{jid}.json", f"jobs/{jid}_status.json"):
+        try:
+            f_obj = _gh_api_simple(tok, "GET", f"/repos/{owner}/{repo}/contents/{p_del}")
+            sha = (f_obj or {}).get("sha")
+            if sha:
+                _gh_api_simple(tok, "DELETE", f"/repos/{owner}/{repo}/contents/{p_del}", {"message": f"Clean {jid}", "sha": sha})
+        except Exception:
+            pass
 
 def _gh_api_simple(token, method, path, data=None):
     url = path if path.startswith("http") else f"https://api.github.com{path}"
