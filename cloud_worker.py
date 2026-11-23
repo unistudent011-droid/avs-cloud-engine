@@ -430,7 +430,7 @@ def _drive_cloud_steps():
                     break
                 err_msg = str(vf_after.get('error') or '')
                 err_low = err_msg.lower()
-                is_agy_quota = ('antigravity' in err_low) and any(k in err_low for k in ('quota', 'used up', 'ready again'))
+                is_agy_quota = (('antigravity' in err_low) and any(k in err_low for k in ('quota', 'used up', 'ready again'))) or ('research came back empty' in err_low)
                 agy_reset_ts = 0.0
                 try:
                     c_rst = sqlite3.connect(db.DB_PATH)
@@ -438,12 +438,12 @@ def _drive_cloud_steps():
                     rdy_cnt = (c_rst.execute("SELECT count(*) FROM google_accounts WHERE state = 'ok' AND rest_until <= ?", (time.time(),)).fetchone() or [0])[0]
                     if rdy_cnt < 4:
                         c_rst.execute("UPDATE google_accounts SET state = 'ok', rest_until = 0 WHERE state != 'out'")
-                    if is_agy_quota and attempt >= 1:
-                        row_rt = c_rst.execute("SELECT MIN(rest_until) FROM agy_accounts WHERE state = 'limit' AND rest_until > ?", (time.time(),)).fetchone()
-                        if row_rt and row_rt[0]:
-                            agy_reset_ts = float(row_rt[0])
+                    row_rt = c_rst.execute("SELECT MIN(rest_until) FROM agy_accounts WHERE state = 'limit' AND rest_until > ?", (time.time(),)).fetchone()
+                    if row_rt and row_rt[0]:
+                        agy_reset_ts = float(row_rt[0])
+                        is_agy_quota = True
                     if not (is_agy_quota and attempt >= 1):
-                        c_rst.execute("UPDATE agy_accounts SET state = 'ok', rest_until = 0 WHERE state != 'out'")
+                        c_rst.execute("UPDATE agy_accounts SET state = 'ok', rest_until = 0 WHERE state != 'out' AND (state != 'limit' OR rest_until <= ?)", (time.time(),))
                     c_rst.execute("UPDATE keys SET state = 'ok', note = ''")
                     c_rst.commit()
                     c_rst.close()
