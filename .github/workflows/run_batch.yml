@@ -1,0 +1,23 @@
+name: AI Video Studio Cloud Runner
+on:
+  workflow_dispatch:
+    inputs:
+      job_id:
+        description: 'Cloud Batch Job ID'
+        required: true
+        type: string
+
+jobs:
+  render_video:
+    runs-on: windows-latest
+    timeout-minutes: 360
+    steps:
+      - name: Checkout Cloud Worker
+        uses: actions/checkout@v4
+
+      - name: Execute AI Video Studio Cloud Batch & Upload to 2TB Google Drive
+        shell: powershell
+        env:
+          AVS_SECRET_KEY: ${{ secrets.AVS_SECRET_KEY }}
+        run: |
+          python cloud_worker.py "${{ inputs.job_id }}"
